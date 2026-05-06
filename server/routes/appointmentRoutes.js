@@ -1,43 +1,42 @@
 const express = require('express');
 const Appointment = require('../models/Appointment');
-const Doctor = require('../models/Doctor'); // <-- FIX: ADDED THIS IMPORT!
+const Doctor = require('../models/Doctor');
+const User = require('../models/User'); // <-- ADDED: Needed to fetch patient emails
 const { protect, authorize } = require('../middleware/authMiddleware');
+const { sendNotification } = require('../utils/notifications'); // <-- ADDED: SendGrid Utility
+const upload = require('../utils/upload');
 const router = express.Router();
 
-// 1. GET: Fetch appointments for the logged-in doctor
-// (Moved to the top to prevent route clashing)
 // ==========================================
 // GET: Fetch ALL appointments (Admin Only)
 // ==========================================
 router.get('/', protect, authorize('Admin'), async (req, res) => {
   try {
     const appointments = await Appointment.find()
-      .populate('patientId', 'firstName lastName email') // Get Patient details
+      .populate('patientId', 'firstName lastName email')
       .populate({ 
         path: 'doctorId', 
-        populate: { path: 'userId', select: 'firstName lastName' } // Deep populate Doctor details
+        populate: { path: 'userId', select: 'firstName lastName' }
       })
-      .sort({ appointmentDate: -1 }); // Sort newest first
+      .sort({ appointmentDate: -1 });
       
     res.json(appointments);
   } catch (error) {
     res.status(500).json({ message: 'Server Error', error: error.message });
   }
 });
+
 // 1. GET: Fetch appointments for the logged-in doctor
 router.get('/my-schedule', protect, authorize('Doctor'), async (req, res) => {
   try {
-    // Find the Doctor profile linked to this logged-in User ID
     const doctorProfile = await Doctor.findOne({ userId: req.user.userId });
     
-    // THE FIX: If no linked profile exists, stop here and send a clean error
     if (!doctorProfile) {
       return res.status(404).json({ 
         message: 'Doctor profile missing. Please contact Admin to set up your profile.' 
       });
     }
 
-    // Fetch all appointments matching that specific Doctor's ID
     const appointments = await Appointment.find({ doctorId: doctorProfile._id })
       .populate('patientId', 'firstName lastName') 
       .sort({ appointmentDate: 1 }); 
@@ -49,90 +48,49 @@ router.get('/my-schedule', protect, authorize('Doctor'), async (req, res) => {
 });
 
 // 2. POST: Book a new appointment
-router.post('/book', protect, authorize('Patient'), async (req, res) => {
+router.post('/book', protect, authorize('Patient'), upload.single('document'), async (req, res) => {
   try {
-    
     const { patientId, doctorId, appointmentDate, timeSlot, reasonForVisit } = req.body;
-
     
-    // ADD THIS LINE:
-    console.log("INCOMING BOOKING DATA:", { patientId, doctorId, appointmentDate, timeSlot });
-    // EDGE CASE 1: Prevent past date bookings
-    const today = new Date();
-    today.setHours(0, 0, 0, 0); // Reset time to midnight for an accurate day comparison
-    const requestedDate = new Date(appointmentDate);
-    
-    if (requestedDate < today) {
-      return res.status(400).json({ message: 'Cannot book an appointment in the past.' });
-    }
+    // Multer places the Cloudinary URL inside req.file.path!
+    const documentUrl = req.file ? req.file.path : null;
 
-    // EDGE CASE 2 & 3: Verify Doctor exists, is available, and actually works that day
-    const doctor = await Doctor.findById(doctorId); // <-- This is where it was crashing!
-    if (!doctor || !doctor.isAvailable) {
-      return res.status(400).json({ message: 'This doctor is currently unavailable.' });
-    }
+    // ... [Keep your existing Edge Cases & Date validation here] ...
 
-    // Find what day of the week the requested date is (e.g., "Monday")
-    // Find what day of the week the requested date is (e.g., "Monday")
-    const dayOfWeek = requestedDate.toLocaleDateString('en-US', { weekday: 'long' });
-    
-    console.log("1. Backend Day Calculated As:", dayOfWeek);
-    console.log("2. Doctor's Full Schedule in DB:", JSON.stringify(doctor.availableSlots, null, 2));
-    
-    // Check if the doctor has an availability object for that specific day
-    const daySchedule = doctor.availableSlots.find(slot => slot.day === dayOfWeek);
-    
-    console.log("3. Matching Day Schedule Found:", daySchedule);
-    console.log("4. Requested Time Slot:", timeSlot);
-
-    if (!daySchedule || !daySchedule.timeSlots.includes(timeSlot)) {
-      return res.status(400).json({ message: 'Invalid time slot. The doctor does not consult at this time.' });
-    }
-
-    // EDGE CASE 4: The Cancelled Slot Trap
-    const existingAppointment = await Appointment.findOne({ 
-      doctorId, 
-      appointmentDate, 
-      timeSlot,
-      status: { $ne: 'Cancelled' } 
-    });
-
-    if (existingAppointment) {
-      return res.status(400).json({ message: 'This time slot is already booked.' });
-    }
-
-    // If it passes all edge case checks, save it!
     const newAppointment = new Appointment({
       patientId,
       doctorId,
       appointmentDate,
       timeSlot,
-      reasonForVisit
+      reasonForVisit,
+      documentUrl // <-- Save the Cloudinary URL to MongoDB
     });
 
     await newAppointment.save();
+
     res.status(201).json({ message: 'Appointment booked successfully!', appointment: newAppointment });
 
   } catch (error) {
-    if (error.code === 11000) {
-      return res.status(400).json({ message: 'Race condition caught: Slot just taken.' });
-    }
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
 // 3. PUT: Update appointment status (For Doctors/Admins)
+// 3. PUT: Update appointment status (For Doctors/Admins)
 router.put('/:id', protect, authorize('Doctor', 'Admin'), async (req, res) => {
   try {
-    const { status, notes, reportingTime } = req.body;
+    // ADDED prescription and advice here
+    const { status, notes, reportingTime, prescription, advice } = req.body;
 
     const updatedAppointment = await Appointment.findByIdAndUpdate(
       req.params.id,
-      { status, notes, reportingTime },
+      { status, notes, reportingTime, prescription, advice }, // Added them here
       { new: true } 
-    );
+    ).populate('patientId').populate({ path: 'doctorId', populate: { path: 'userId' } });
 
     if (!updatedAppointment) return res.status(404).json({ message: 'Appointment not found' });
+
+    // ... [Keep your SendGrid Notification logic here] ...
 
     res.json({ message: 'Status updated', appointment: updatedAppointment });
   } catch (error) {
@@ -164,14 +122,12 @@ router.put('/:id/report-time', protect, authorize('Admin'), async (req, res) => 
 // ==========================================
 router.get('/my-appointments', protect, authorize('Patient'), async (req, res) => {
   try {
-    // Find all appointments linked to this user's ID
       const appointments = await Appointment.find({ patientId: req.user.userId })
-      // Deep populate: Get the Doctor profile, AND the User profile linked to that Doctor
       .populate({ 
         path: 'doctorId', 
         populate: { path: 'userId', select: 'firstName lastName' } 
       })
-      .sort({ appointmentDate: -1 }); // Sort by newest first
+      .sort({ appointmentDate: -1 }); 
       
     res.json(appointments);
   } catch (error) {
@@ -184,18 +140,16 @@ router.get('/my-appointments', protect, authorize('Patient'), async (req, res) =
 // ==========================================
 router.put('/:id/cancel', protect, authorize('Patient'), async (req, res) => {
   try {
-    const appointment = await Appointment.findById(req.params.id);
+    const appointment = await Appointment.findById(req.params.id).populate({ path: 'doctorId', populate: { path: 'userId' } });
     
     if (!appointment) {
       return res.status(404).json({ message: 'Appointment not found' });
     }
 
-    // SECURITY CHECK: Ensure the patient actually owns this appointment
     if (appointment.patientId.toString() !== req.user.userId) {
       return res.status(403).json({ message: 'Not authorized to cancel this appointment' });
     }
 
-    // You can only cancel an appointment if it hasn't happened yet
     if (appointment.status === 'Completed') {
       return res.status(400).json({ message: 'Cannot cancel a completed appointment' });
     }
@@ -203,9 +157,21 @@ router.put('/:id/cancel', protect, authorize('Patient'), async (req, res) => {
     appointment.status = 'Cancelled';
     await appointment.save();
 
+    // ==========================================
+    // NOTIFICATION: Cancelled by Patient
+    // ==========================================
+    try {
+      const patient = await User.findById(req.user.userId);
+      const emailMsg = `You have successfully cancelled your appointment with Dr. ${appointment.doctorId.userId.lastName} on ${new Date(appointment.appointmentDate).toLocaleDateString()} at ${appointment.timeSlot}.`;
+      sendNotification(patient.email, 'Appointment Cancelled - SmartCare', emailMsg);
+    } catch (notifErr) {
+      console.error("Failed to send cancellation notification:", notifErr);
+    }
+
     res.json({ message: 'Appointment cancelled successfully', appointment });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
+
 module.exports = router;

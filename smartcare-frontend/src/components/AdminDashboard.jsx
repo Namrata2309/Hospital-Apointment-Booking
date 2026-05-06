@@ -1,8 +1,13 @@
 import React, { useState, useEffect, useContext } from 'react';
 import { AuthContext } from '../context/AuthContext';
 import api from '../utils/api';
+import { 
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
+  PieChart, Pie, Cell 
+} from 'recharts';
 
 const BASE_FONT = "'DM Sans', -apple-system, sans-serif";
+const COLORS = ['#0d3b6e', '#00C49F', '#FFBB28', '#FF8042', '#8884d8', '#82ca9d'];
 
 const S = {
   page: {
@@ -47,6 +52,11 @@ const S = {
     border: '1px solid rgba(252,165,165,0.4)', borderRadius: '8px',
     fontSize: '13px', cursor: 'pointer', fontFamily: BASE_FONT,
   },
+
+  // ── Analytics Charts ──────────────────────────────────────────────────
+  chartGrid: { display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(450px, 1fr))', gap: '20px', marginBottom: '1.5rem' },
+  chartCard: { background: '#fff', padding: '20px', borderRadius: '12px', border: '0.5px solid #dde1e7', height: '350px' },
+  chartTitle: { fontFamily: 'Georgia, serif', fontSize: '16px', color: '#0d1f3c', marginBottom: '20px', textAlign: 'center' },
 
   // ── Two-column layout ────────────────────────────────────────────────
   twoCol: { display: 'flex', gap: '20px', alignItems: 'flex-start' },
@@ -159,15 +169,22 @@ const AdminDashboard = () => {
 
   const [jsonInput, setJsonInput]         = useState('');
   const [appointments, setAppointments]   = useState([]);
+  const [analytics, setAnalytics]         = useState({ popularSpecialties: [], doctorPerformance: [], kpis: {} });
   const [loading, setLoading]             = useState(true);
   const [editingId, setEditingId]         = useState(null);
   const [editingTime, setEditingTime]     = useState('');
   const [updateLoading, setUpdateLoading] = useState(false);
 
-  const fetchAllAppointments = async () => {
+  const fetchData = async () => {
     try {
-      const res = await api.get('/appointments');
-      setAppointments(res.data);
+      // Fetch both Data streams concurrently!
+      const [apptRes, analyticsRes] = await Promise.all([
+        api.get('/appointments'),
+        api.get('/admin/analytics') // Assuming you created this route in step 2!
+      ]);
+      
+      setAppointments(apptRes.data);
+      setAnalytics(analyticsRes.data);
     } catch (err) {
       console.error(err);
     } finally {
@@ -175,7 +192,7 @@ const AdminDashboard = () => {
     }
   };
 
-  useEffect(() => { fetchAllAppointments(); }, []);
+  useEffect(() => { fetchData(); }, []);
 
   const handleBulkUpload = async (e) => {
     e.preventDefault();
@@ -184,6 +201,7 @@ const AdminDashboard = () => {
       await api.post('/doctors/bulk-register', parsed);
       alert('Upload successful');
       setJsonInput('');
+      fetchData(); // Refresh everything after upload
     } catch (err) {
       alert('Invalid JSON or upload failed');
     }
@@ -218,18 +236,15 @@ const AdminDashboard = () => {
 
   const handleCancel = () => { setEditingId(null); setEditingTime(''); };
 
-  // Stats
+  // Calculate frontend stats for the boxes (but use backend Revenue)
   const totalAppts     = appointments.length;
   const completedAppts = appointments.filter((a) => a.status === 'Completed').length;
   const cancelledAppts = appointments.filter((a) => a.status === 'Cancelled').length;
-  const pendingAppts   = appointments.filter(
-    (a) => a.status === 'Pending' || a.status === 'Confirmed'
-  ).length;
 
   const stats = [
-    { label: 'Total',     value: totalAppts,     bg: '#fff',    numColor: '#0d3b6e', border: '#dde1e7' },
+    { label: 'Revenue (₹)', value: analytics.kpis?.totalRevenue?.toLocaleString() || 0, bg: '#fff', numColor: '#0d3b6e', border: '#dde1e7' },
+    { label: 'Total Appts', value: totalAppts, bg: '#fff', numColor: '#0d3b6e', border: '#dde1e7' },
     { label: 'Completed', value: completedAppts, bg: '#f0fdf4', numColor: '#15803d', border: '#bbf7d0' },
-    { label: 'Upcoming',  value: pendingAppts,   bg: '#fffbeb', numColor: '#92400e', border: '#fde68a' },
     { label: 'Cancelled', value: cancelledAppts, bg: '#fff5f5', numColor: '#b91c1c', border: '#fca5a5' },
   ];
 
@@ -266,6 +281,49 @@ const AdminDashboard = () => {
             </div>
           ))}
         </div>
+
+        {/* ── Analytics Charts ── */}
+        {!loading && analytics.popularSpecialties.length > 0 && (
+          <div style={S.chartGrid}>
+            {/* PIE CHART */}
+            <div style={S.chartCard}>
+              <h3 style={S.chartTitle}>Patient Demand by Specialty</h3>
+              <ResponsiveContainer width="100%" height="90%">
+                <PieChart>
+                  <Pie
+                    data={analytics.popularSpecialties}
+                    cx="50%" cy="50%"
+                    innerRadius={60} outerRadius={100}
+                    paddingAngle={5} dataKey="value"
+                    label={({ name, percent }) => `${name} ${(percent * 100).toFixed(0)}%`}
+                  >
+                    {analytics.popularSpecialties.map((entry, index) => (
+                      <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+              </ResponsiveContainer>
+            </div>
+
+            {/* BAR CHART */}
+            <div style={S.chartCard}>
+              <h3 style={S.chartTitle}>Doctor Performance (Revenue vs. Volume)</h3>
+              <ResponsiveContainer width="100%" height="90%">
+                <BarChart data={analytics.doctorPerformance} margin={{ top: 10, right: 0, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="name" axisLine={false} tickLine={false} style={{ fontSize: '12px' }} />
+                  <YAxis yAxisId="left" orientation="left" stroke="#0d3b6e" style={{ fontSize: '12px' }} />
+                  <YAxis yAxisId="right" orientation="right" stroke="#00C49F" style={{ fontSize: '12px' }} />
+                  <Tooltip cursor={{ fill: 'transparent' }} />
+                  <Legend wrapperStyle={{ fontSize: '12px' }} />
+                  <Bar yAxisId="left" dataKey="revenue" name="Revenue (₹)" fill="#0d3b6e" radius={[4, 4, 0, 0]} />
+                  <Bar yAxisId="right" dataKey="appointments" name="Appointments" fill="#00C49F" radius={[4, 4, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        )}
 
         {/* ── Two-column body ── */}
         <div style={S.twoCol}>

@@ -1,15 +1,15 @@
-const mongoose = require('mongoose');
+const mongoose = require("mongoose");
 
 const appointmentSchema = new mongoose.Schema(
   {
     patientId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'User', // Links to the patient making the booking
+      ref: "User", // Links to the patient making the booking
       required: true,
     },
     doctorId: {
       type: mongoose.Schema.Types.ObjectId,
-      ref: 'Doctor', // Links to the specific doctor's profile
+      ref: "Doctor", // Links to the specific doctor's profile
       required: true,
     },
     appointmentDate: {
@@ -24,10 +24,22 @@ const appointmentSchema = new mongoose.Schema(
       type: String, // Allows the patient to write symptoms beforehand
       trim: true,
     },
+    // NEW FIELDS FOR PRESCRIPTION
+  prescription: [
+    {
+      medicine: String,
+      dosage: String,
+      duration: String,
+    }
+  ],
+  advice: {
+    type: String,
+    default: ''
+  },
     status: {
       type: String,
-      enum: ['Pending', 'Confirmed', 'Completed', 'Cancelled', 'No-Show'],
-      default: 'Pending', // Real-world systems usually require confirmation
+      enum: ["Pending", "Confirmed", "Completed", "Cancelled", "No-Show"],
+      default: "Pending", // Real-world systems usually require confirmation
     },
     notes: {
       type: String, // Space for the doctor to write a quick note after the visit
@@ -35,13 +47,20 @@ const appointmentSchema = new mongoose.Schema(
     reportingTime: {
       type: Date, // Time when the patient reported/arrived for the appointment
       default: null,
-    }
+    },
+    documentUrl: {
+      type: String,
+      default: null, // Will hold the Cloudinary URL if the patient uploads a file
+    },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Real-world safeguard: Prevent double booking at the database level
 // This index ensures a specific doctor cannot have two appointments at the exact same date and time.
-appointmentSchema.index({ doctorId: 1, appointmentDate: 1, timeSlot: 1 }, { unique: true });
+appointmentSchema.index(
+  { doctorId: 1, appointmentDate: 1, timeSlot: 1 },
+  { unique: true },
+);
 
-module.exports = mongoose.model('Appointment', appointmentSchema);
+module.exports = mongoose.model("Appointment", appointmentSchema);

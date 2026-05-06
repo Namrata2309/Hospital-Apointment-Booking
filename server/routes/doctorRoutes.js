@@ -8,24 +8,75 @@ const router = express.Router();
 // ==========================================
 // GET: Fetch all available doctors (For Patients Page)
 // ==========================================
+// routes/doctorRoutes.js (or wherever your get doctors route is)
+
+// ==========================================
+// GET: Fetch all doctors with Search, Filter & Pagination
+// ==========================================
 router.get('/', async (req, res) => {
   try {
-    // Find all doctors who are marked as available
-    // .populate() pulls the firstName, lastName, and email from the linked User profile
-    const doctors = await Doctor.find({ isAvailable: true })
-      .populate('userId', 'firstName lastName email phone'); 
-    
-    // Check if any doctors exist
-    if (!doctors || doctors.length === 0) {
-      return res.status(404).json({ message: 'No doctors found at this time.' });
+    // 1. Extract query parameters from the URL
+    const { search, specialty, sort, page = 1, limit = 5 } = req.query;
+
+    // Build the initial query object for the Doctor collection
+    let doctorQuery = {};
+
+    // 2. SEARCH BY NAME (The Two-Step Query)
+    if (search) {
+      // Step A: Find users whose first or last name matches the search term (case-insensitive)
+      const matchedUsers = await User.find({
+        role: 'Doctor',
+        $or: [
+          { firstName: { $regex: search, $options: 'i' } },
+          { lastName: { $regex: search, $options: 'i' } }
+        ]
+      }).select('_id'); 
+
+      // Extract just the IDs into an array
+      const matchedUserIds = matchedUsers.map(user => user._id);
+
+      // Step B: Tell the Doctor query to ONLY look for these specific User IDs
+      doctorQuery.userId = { $in: matchedUserIds };
     }
 
-    res.status(200).json(doctors);
+    // 3. FILTER BY SPECIALTY
+    if (specialty) {
+      // Case-insensitive exact match
+      doctorQuery.specialty = { $regex: new RegExp(`^${specialty}$`, 'i') };
+    }
+
+    // 4. SORTING
+    let sortObj = {};
+    if (sort === 'fee-asc') sortObj.consultationFee = 1;      // Low to High
+    if (sort === 'fee-desc') sortObj.consultationFee = -1;    // High to Low
+    else sortObj.createdAt = -1;                              // Default: Newest first
+
+    // 5. PAGINATION MATH
+    const skipCount = (parseInt(page) - 1) * parseInt(limit);
+
+    // 6. EXECUTE THE FINAL QUERY
+    const doctors = await Doctor.find(doctorQuery)
+      .populate('userId', 'firstName lastName email')
+      .sort(sortObj)
+      .skip(skipCount)
+      .limit(parseInt(limit));
+
+    // Get the total count of documents that match this query for frontend math
+    const totalDoctors = await Doctor.countDocuments(doctorQuery);
+
+    res.json({
+      doctors,
+      currentPage: parseInt(page),
+      totalPages: Math.ceil(totalDoctors / limit),
+      totalDoctors
+    });
+
   } catch (error) {
-    res.status(500).json({ message: 'Failed to fetch doctors', error: error.message });
+    res.status(500).json({ message: 'Server error', error: error.message });
   }
 });
 
+module.exports = router;
 // ==========================================
 // POST: Bulk Register Doctors (Admin Only)
 // ==========================================
